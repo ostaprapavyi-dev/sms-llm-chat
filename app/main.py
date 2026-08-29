@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import debug, health, webhooks
+from app.api import admin, debug, health, webhooks
 from app.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import RequestContextMiddleware, configure_logging
@@ -86,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(webhooks.router)
+    app.include_router(admin.router)
     if settings.debug_endpoints_enabled:
         app.include_router(debug.router)
 

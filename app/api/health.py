@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel
 
 from app.api.deps import SettingsDep
+from app.core.schemas import CamelModel
 
 router = APIRouter(tags=["ops"])
 
 
-class Health(BaseModel):
+class Health(CamelModel):
     status: str
     sms_provider: str
     llm_provider: str

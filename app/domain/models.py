@@ -11,8 +11,8 @@ import uuid
 from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic.alias_generators import to_camel
 
+from app.core.schemas import CamelModel
 from app.domain.enums import ConversationStatus, DeliveryStatus, Feedback
 
 
@@ -67,14 +67,10 @@ class ConversationUpdate(BaseModel):
         return self.model_dump(exclude_unset=True)
 
 
-class ConversationResponse(BaseModel):
+class ConversationResponse(CamelModel):
     """API representation -- camelCase, as in the assignment example."""
 
-    model_config = ConfigDict(
-        from_attributes=True,
-        alias_generator=to_camel,
-        populate_by_name=True,
-    )
+    model_config = ConfigDict(from_attributes=True)
 
     id: str
     phone_number: str

@@ -11,11 +11,11 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Request, Response, status
-from pydantic import BaseModel
 from starlette.formparsers import MultiPartException
 
 from app.api.deps import ConversationServiceDep, SettingsDep, TwilioParserDep
 from app.core.errors import InvalidWebhookError
+from app.core.schemas import CamelModel
 from app.domain.models import InboundMessage
 from app.providers.sms.base import parse_generic_payload
 from app.providers.sms.twilio import build_twiml
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
-class WebhookAck(BaseModel):
+class WebhookAck(CamelModel):
     """Response of the JSON webhook: the carrier only needs to know we took it.
 
     ``conversation_id`` is null for feedback that had no conversation to attach to.
