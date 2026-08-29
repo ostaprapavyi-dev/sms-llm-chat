@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 20.0
     llm_max_retries: int = 2
     llm_max_output_tokens: int = 300
+    # Replies longer than this are truncated before they hit the carrier.
+    max_reply_length: int = 480
     llm_system_prompt: str = DEFAULT_SYSTEM_PROMPT
     groq_api_key: str = ""
     openai_api_key: str = ""
