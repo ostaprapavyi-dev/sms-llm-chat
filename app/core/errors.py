@@ -73,6 +73,12 @@ class SignatureVerificationError(AppError):
     default_message = "The webhook signature could not be verified"
 
 
+class DuplicateMessageError(AppError):
+    code = "duplicate_message"
+    status_code = 409
+    default_message = "This provider message was already processed"
+
+
 class NotFoundError(AppError):
     code = "not_found"
     status_code = 404
