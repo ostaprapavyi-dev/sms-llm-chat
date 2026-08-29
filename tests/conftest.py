@@ -7,6 +7,7 @@ LLM providers, so the tests cover the same wiring that runs in production.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -60,3 +61,29 @@ def sms(app) -> MockSmsProvider:
 @pytest.fixture
 def llm(app) -> MockLLMProvider:
     return app.state.llm_provider
+
+
+@pytest.fixture
+def app_factory(tmp_path: Path):
+    """Build a client for an app configured differently from the default fixture.
+
+    Needed for settings that are read at construction time (which routers exist), not
+    per request.
+    """
+
+    @asynccontextmanager
+    async def _factory(**overrides) -> AsyncIterator[tuple[AsyncClient, object]]:
+        custom = Settings(
+            _env_file=None,
+            database_url=f"sqlite+aiosqlite:///{(tmp_path / 'custom.db').as_posix()}",
+            admin_username=ADMIN_AUTH[0],
+            admin_password=ADMIN_AUTH[1],
+            **overrides,
+        )
+        application = create_app(custom)
+        async with application.router.lifespan_context(application):
+            transport = ASGITransport(app=application)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as http:
+                yield http, application
+
+    return _factory
