@@ -7,12 +7,13 @@ Groq or SQLAlchemy directly -- which is what lets any of them be swapped.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
 from app.config import Settings
-from app.core.errors import AppError, DuplicateMessageError, SmsProviderError
+from app.core.errors import AppError, DuplicateMessageError, LLMError, SmsProviderError
 from app.core.logging import truncate
 from app.db.repository import ConversationRepository
 from app.domain.enums import ConversationStatus, DeliveryStatus, Feedback
@@ -94,6 +95,20 @@ class ConversationService:
 
         rating = classify_feedback(message.body)
         if rating is not None:
+            # A rating never becomes a conversation, so the duplicate check above cannot
+            # see it: the id of the SMS that carried it is tracked separately.
+            already_applied = await self._repository.get_by_feedback_message_id(
+                message.provider_message_id
+            )
+            if already_applied is not None:
+                logger.info(
+                    "duplicate feedback ignored",
+                    extra={
+                        "conversationId": already_applied.id,
+                        "providerMessageId": message.provider_message_id,
+                    },
+                )
+                return AcceptedMessage(kind=MessageKind.DUPLICATE, conversation=already_applied)
             return await self._record_feedback(message, rating)
 
         conversation = Conversation(
@@ -240,9 +255,17 @@ class ConversationService:
                 reply=self._settings.feedback_no_conversation_reply,
             )
 
-        conversation = await self._repository.update(
-            latest.id, ConversationUpdate(feedback=rating)
-        )
+        try:
+            conversation = await self._repository.update(
+                latest.id,
+                ConversationUpdate(
+                    feedback=rating, feedback_message_id=message.provider_message_id
+                ),
+            )
+        except DuplicateMessageError:
+            # The unique constraint caught a delivery that raced past the check above.
+            return AcceptedMessage(kind=MessageKind.DUPLICATE, conversation=latest)
+
         logger.info(
             "feedback recorded",
             extra={"conversationId": conversation.id, "feedback": rating},
@@ -266,7 +289,20 @@ class ConversationService:
         if not messages:  # pragma: no cover - the current turn is always stored first
             messages = [ChatMessage(role="user", content=conversation.incoming_message)]
 
-        reply = await self._llm.generate(messages, system=self._settings.llm_system_prompt)
+        # A provider-agnostic deadline: the OpenAI SDK enforces its own timeout and
+        # retries, but a mock, a local model or a future provider might hang forever,
+        # and this runs in a background task nobody is waiting on.
+        try:
+            reply = await asyncio.wait_for(
+                self._llm.generate(messages, system=self._settings.llm_system_prompt),
+                timeout=self._settings.llm_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise LLMError(
+                f"{getattr(self._llm, 'name', 'llm')} did not answer within "
+                f"{self._settings.llm_timeout_seconds}s"
+            ) from exc
+
         return self._fit_sms(reply)
 
     async def _deliver(self, conversation: Conversation, reply: str) -> Conversation:

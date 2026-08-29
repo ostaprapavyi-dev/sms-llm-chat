@@ -40,6 +40,12 @@ class ConversationRepository(Protocol):
 
     async def get_by_provider_message_id(self, provider_message_id: str) -> Conversation | None: ...
 
+    async def get_by_feedback_message_id(
+        self, provider_message_id: str
+    ) -> Conversation | None:
+        """The conversation a rating from this inbound SMS was already applied to."""
+        ...
+
     async def get_latest_for_phone(self, phone_number: str) -> Conversation | None: ...
 
     async def list_by_phone(
@@ -96,6 +102,9 @@ class SqlAlchemyConversationRepository:
                 for field, value in values.items():
                     setattr(row, field, value)
                 row.updated_at = utcnow()
+        except IntegrityError as exc:
+            # Only the unique feedback_message_id can collide here.
+            raise DuplicateMessageError("This feedback message was already applied") from exc
         except SQLAlchemyError as exc:
             raise StorageError("Could not update the conversation") from exc
         return _to_domain(row)
@@ -109,6 +118,13 @@ class SqlAlchemyConversationRepository:
         return await self._first(
             select(ConversationRow).where(
                 ConversationRow.provider_message_id == provider_message_id
+            )
+        )
+
+    async def get_by_feedback_message_id(self, provider_message_id: str) -> Conversation | None:
+        return await self._first(
+            select(ConversationRow).where(
+                ConversationRow.feedback_message_id == provider_message_id
             )
         )
 
@@ -169,6 +185,12 @@ class InMemoryConversationRepository:
             stored = self._items.get(conversation_id)
             if stored is None:
                 raise NotFoundError(f"Conversation {conversation_id} not found")
+            feedback_id = changes.changes().get("feedback_message_id")
+            if feedback_id is not None and any(
+                item.feedback_message_id == feedback_id and item.id != conversation_id
+                for item in self._items.values()
+            ):
+                raise DuplicateMessageError("This feedback message was already applied")
             updated = stored.model_copy(update={**changes.changes(), "updated_at": utcnow()})
             self._items[conversation_id] = updated
             return updated.model_copy(deep=True)
@@ -180,6 +202,12 @@ class InMemoryConversationRepository:
     async def get_by_provider_message_id(self, provider_message_id: str) -> Conversation | None:
         for item in self._sorted():
             if item.provider_message_id == provider_message_id:
+                return item.model_copy(deep=True)
+        return None
+
+    async def get_by_feedback_message_id(self, provider_message_id: str) -> Conversation | None:
+        for item in self._sorted():
+            if item.feedback_message_id == provider_message_id:
                 return item.model_copy(deep=True)
         return None
 

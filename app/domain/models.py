@@ -48,6 +48,7 @@ class Conversation(BaseModel):
     status: ConversationStatus = ConversationStatus.RECEIVED
     delivery_status: DeliveryStatus | None = None
     feedback: Feedback = Feedback.NONE
+    feedback_message_id: str | None = None
     error_message: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -61,6 +62,7 @@ class ConversationUpdate(BaseModel):
     status: ConversationStatus | None = None
     delivery_status: DeliveryStatus | None = None
     feedback: Feedback | None = None
+    feedback_message_id: str | None = None
     error_message: str | None = None
 
     def changes(self) -> dict[str, object]:

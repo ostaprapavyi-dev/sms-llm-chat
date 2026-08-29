@@ -49,6 +49,11 @@ class ConversationRow(Base):
     feedback: Mapped[Feedback] = mapped_column(
         _enum(Feedback, "feedback"), default=Feedback.NONE
     )
+    # Which inbound SMS produced the rating: an audit trail, and the guard that keeps a
+    # retried feedback webhook from being applied (and acknowledged) twice.
+    feedback_message_id: Mapped[str | None] = mapped_column(
+        String(64), unique=True, default=None
+    )
     error_message: Mapped[str | None] = mapped_column(Text, default=None)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
