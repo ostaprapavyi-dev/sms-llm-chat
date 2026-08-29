@@ -9,26 +9,54 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from enum import StrEnum
 
 from app.config import Settings
 from app.core.errors import AppError, DuplicateMessageError, SmsProviderError
 from app.core.logging import truncate
 from app.db.repository import ConversationRepository
-from app.domain.enums import ConversationStatus, DeliveryStatus
+from app.domain.enums import ConversationStatus, DeliveryStatus, Feedback
 from app.domain.models import Conversation, ConversationUpdate, InboundMessage
 from app.providers.llm.base import ChatMessage, LLMProvider
 from app.providers.sms.base import SmsProvider
+from app.services.feedback import classify_feedback
 
 logger = logging.getLogger(__name__)
+
+
+class MessageKind(StrEnum):
+    """What an inbound message turned out to be."""
+
+    QUESTION = "question"
+    FEEDBACK = "feedback"
+    DUPLICATE = "duplicate"
+
+
+@dataclass
+class AcceptedMessage:
+    """Result of taking an inbound message in, before any answer is generated."""
+
+    kind: MessageKind
+    conversation: Conversation | None = None
+    reply: str | None = None
+
+    @property
+    def needs_processing(self) -> bool:
+        """Only a fresh question costs an LLM call."""
+        return self.kind is MessageKind.QUESTION and self.conversation is not None
 
 
 @dataclass
 class HandledMessage:
     """Outcome of processing one inbound message."""
 
-    conversation: Conversation
+    conversation: Conversation | None
     reply: str
-    duplicate: bool = False
+    kind: MessageKind = MessageKind.QUESTION
+
+    @property
+    def duplicate(self) -> bool:
+        return self.kind is MessageKind.DUPLICATE
 
 
 class ConversationService:
@@ -47,8 +75,8 @@ class ConversationService:
 
     # -- entry points ----------------------------------------------------
 
-    async def accept(self, message: InboundMessage) -> tuple[Conversation, bool]:
-        """Persist the inbound message. Returns ``(conversation, is_duplicate)``.
+    async def accept(self, message: InboundMessage) -> AcceptedMessage:
+        """Take the message in and decide what it is.
 
         Kept separate from :meth:`process` so the webhook can store the message and
         answer the carrier immediately, then generate the reply in the background.
@@ -62,7 +90,11 @@ class ConversationService:
                     "providerMessageId": message.provider_message_id,
                 },
             )
-            return existing, True
+            return AcceptedMessage(kind=MessageKind.DUPLICATE, conversation=existing)
+
+        rating = classify_feedback(message.body)
+        if rating is not None:
+            return await self._record_feedback(message, rating)
 
         conversation = Conversation(
             phone_number=message.phone_number,
@@ -79,7 +111,7 @@ class ConversationService:
             )
             if stored is None:  # pragma: no cover - only on a storage inconsistency
                 raise
-            return stored, True
+            return AcceptedMessage(kind=MessageKind.DUPLICATE, conversation=stored)
 
         logger.info(
             "inbound message stored",
@@ -89,7 +121,7 @@ class ConversationService:
                 "body": truncate(message.body),
             },
         )
-        return conversation, False
+        return AcceptedMessage(kind=MessageKind.QUESTION, conversation=conversation)
 
     async def process(self, conversation: Conversation, *, deliver: bool = True) -> HandledMessage:
         """Generate the answer, store it, and send it back unless ``deliver`` is off.
@@ -139,14 +171,41 @@ class ConversationService:
         self, message: InboundMessage, *, deliver: bool = True
     ) -> HandledMessage:
         """Store and process in one go (TwiML mode and tests)."""
-        conversation, duplicate = await self.accept(message)
-        if duplicate:
-            return HandledMessage(
-                conversation=conversation,
-                reply=conversation.llm_response or self._settings.fallback_reply,
-                duplicate=True,
+        accepted = await self.accept(message)
+
+        if accepted.kind is MessageKind.DUPLICATE:
+            conversation = accepted.conversation
+            reply = (conversation.llm_response if conversation else None) or (
+                self._settings.fallback_reply
             )
-        return await self.process(conversation, deliver=deliver)
+            return HandledMessage(
+                conversation=conversation, reply=reply, kind=MessageKind.DUPLICATE
+            )
+
+        if accepted.kind is MessageKind.FEEDBACK:
+            reply = accepted.reply or self._settings.feedback_ack_reply
+            if deliver:
+                await self.send_reply(message.phone_number, reply)
+            return HandledMessage(
+                conversation=accepted.conversation, reply=reply, kind=MessageKind.FEEDBACK
+            )
+
+        assert accepted.conversation is not None  # guaranteed for QUESTION
+        return await self.process(accepted.conversation, deliver=deliver)
+
+    async def send_reply(self, to: str, text: str) -> None:
+        """Send a message that is not tied to a stored answer (a feedback ack)."""
+        try:
+            await self._sms.send(to, text)
+        except SmsProviderError as exc:
+            logger.error("ack delivery failed", extra={"to": to, "error": str(exc)})
+
+    async def send_reply_in_background(self, to: str, text: str) -> None:
+        """Background-task wrapper around :meth:`send_reply`."""
+        try:
+            await self.send_reply(to, text)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("background ack crashed", extra={"to": to})
 
     async def process_in_background(self, conversation: Conversation) -> None:
         """Background-task wrapper: never let an exception escape unlogged."""
@@ -163,6 +222,36 @@ class ConversationService:
             )
 
     # -- internals -------------------------------------------------------
+
+    async def _record_feedback(self, message: InboundMessage, rating: Feedback) -> AcceptedMessage:
+        """Attach a rating to the most recent conversation of that phone number.
+
+        A rating is not a question: it is never stored as its own conversation and it
+        never reaches the LLM.
+        """
+        latest = await self._repository.get_latest_for_phone(message.phone_number)
+        if latest is None:
+            logger.info(
+                "feedback without a conversation to attach it to",
+                extra={"phoneNumber": message.phone_number, "feedback": rating},
+            )
+            return AcceptedMessage(
+                kind=MessageKind.FEEDBACK,
+                reply=self._settings.feedback_no_conversation_reply,
+            )
+
+        conversation = await self._repository.update(
+            latest.id, ConversationUpdate(feedback=rating)
+        )
+        logger.info(
+            "feedback recorded",
+            extra={"conversationId": conversation.id, "feedback": rating},
+        )
+        return AcceptedMessage(
+            kind=MessageKind.FEEDBACK,
+            conversation=conversation,
+            reply=self._settings.feedback_ack_reply,
+        )
 
     async def _generate_reply(self, conversation: Conversation) -> str:
         history = await self._repository.recent_for_phone(

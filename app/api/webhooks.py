@@ -19,7 +19,7 @@ from app.core.errors import InvalidWebhookError
 from app.domain.models import InboundMessage
 from app.providers.sms.base import parse_generic_payload
 from app.providers.sms.twilio import build_twiml
-from app.services.conversation_service import ConversationService
+from app.services.conversation_service import ConversationService, MessageKind
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +29,13 @@ EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
 class WebhookAck(BaseModel):
-    """Response of the JSON webhook: the carrier only needs to know we took it."""
+    """Response of the JSON webhook: the carrier only needs to know we took it.
+
+    ``conversation_id`` is null for feedback that had no conversation to attach to.
+    """
 
     status: str
-    conversation_id: str
+    conversation_id: str | None = None
     reply: str | None = None
 
 
@@ -41,13 +44,23 @@ async def _accept_and_schedule(
     service: ConversationService,
     background: BackgroundTasks,
 ) -> WebhookAck:
-    """Store the message, answer the carrier now, generate the reply afterwards."""
-    conversation, duplicate = await service.accept(message)
-    if duplicate:
-        return WebhookAck(status="duplicate", conversation_id=conversation.id)
+    """Store the message, answer the carrier now, do the slow work afterwards."""
+    accepted = await service.accept(message)
 
-    background.add_task(service.process_in_background, conversation)
-    return WebhookAck(status="accepted", conversation_id=conversation.id)
+    if accepted.kind is MessageKind.DUPLICATE:
+        return WebhookAck(status="duplicate", conversation_id=accepted.conversation.id)
+
+    if accepted.kind is MessageKind.FEEDBACK:
+        reply = accepted.reply or ""
+        background.add_task(service.send_reply_in_background, message.phone_number, reply)
+        return WebhookAck(
+            status="feedback",
+            conversation_id=accepted.conversation.id if accepted.conversation else None,
+            reply=reply,
+        )
+
+    background.add_task(service.process_in_background, accepted.conversation)
+    return WebhookAck(status="accepted", conversation_id=accepted.conversation.id)
 
 
 @router.post(
@@ -68,8 +81,8 @@ async def receive_sms(
         # Synchronous mode: the answer is part of this response.
         result = await service.handle_inbound(message, deliver=False)
         return WebhookAck(
-            status="duplicate" if result.duplicate else "completed",
-            conversation_id=result.conversation.id,
+            status="completed" if result.kind is MessageKind.QUESTION else result.kind.value,
+            conversation_id=result.conversation.id if result.conversation else None,
             reply=result.reply,
         )
 
