@@ -10,11 +10,11 @@ from __future__ import annotations
 import itertools
 import logging
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
-
 from app.core.logging import truncate
+from app.core.schemas import CamelModel
 from app.domain.enums import DeliveryStatus
 from app.domain.models import InboundMessage, utcnow
 from app.providers.sms.base import SendResult, parse_generic_payload
@@ -22,13 +22,13 @@ from app.providers.sms.base import SendResult, parse_generic_payload
 logger = logging.getLogger(__name__)
 
 
-class SentMessage(BaseModel):
+class SentMessage(CamelModel):
     """One entry of the mock outbox."""
 
     to: str
     body: str
     message_id: str
-    sent_at: object = None
+    sent_at: datetime
 
 
 class MockSmsProvider:

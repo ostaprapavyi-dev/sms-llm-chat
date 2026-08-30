@@ -47,7 +47,7 @@ def _provider(completions: _FakeCompletions) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(
         name="groq",
         api_key="test-key",
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-20b",
         client=_FakeClient(completions),
     )
 
@@ -129,7 +129,7 @@ class TestFactory:
         settings = Settings(_env_file=None, llm_provider="groq", groq_api_key="key")
         provider = build_llm_provider(settings)
         assert isinstance(provider, OpenAICompatibleProvider)
-        assert (provider.name, provider.model) == ("groq", "llama-3.3-70b-versatile")
+        assert (provider.name, provider.model) == ("groq", "openai/gpt-oss-20b")
 
     def test_builds_openai_with_its_preset(self):
         settings = Settings(_env_file=None, llm_provider="openai", openai_api_key="key")

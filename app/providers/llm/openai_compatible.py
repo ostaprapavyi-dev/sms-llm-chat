@@ -30,7 +30,7 @@ class ProviderPreset:
 PRESETS: dict[str, ProviderPreset] = {
     "groq": ProviderPreset(
         base_url="https://api.groq.com/openai/v1",
-        default_model="llama-3.3-70b-versatile",
+        default_model="openai/gpt-oss-20b",
         api_key_field="groq_api_key",
     ),
     "openai": ProviderPreset(

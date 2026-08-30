@@ -32,7 +32,8 @@ class TestDebugOutbox:
         assert len(outbox) == 1
         assert outbox[0]["to"] == PHONE
         assert "Forgot password" in outbox[0]["body"]
-        assert outbox[0]["message_id"].startswith("MOCK")
+        assert outbox[0]["messageId"].startswith("MOCK")
+        assert outbox[0]["sentAt"]
 
     async def test_is_empty_before_anything_is_sent(self, client):
         assert (await client.get("/debug/outbox")).json() == []
